@@ -11,6 +11,65 @@ from pymongo.errors import ConnectionFailure
 import keys
 
 GITHUB_ORGANISATION = 'mozilla'
+REPOS = [
+            'webmaker.org',
+            'popcorn.webmaker.org',
+            'badgekit-issue',
+            'openbadges-badgekit',
+            'popcorn-js',
+            'thimble.webmaker.org',
+            'webmaker-suite',
+            'MakeAPI',
+            'togetherjs',
+            'openbadges-directory',
+            'makeapi-client',
+            'webmaker-analytics',
+            'goggles.webmaker.org',
+            'popcorn-docs',
+            'CSOL-site',
+            'badgekit-issue-client',
+            'login.webmaker.org',
+            'openbadges-discovery',
+            'openbadger',
+            'make-valet',
+            'openbadges',
+            'webmaker-profile',
+            'eoy-fundraising',
+            'openbadges-validator-service',
+            'openbadges-validator',
+            'webmaker-download-locales',
+            'webmaker-profile-service',
+            'openbadges-specification',
+            'node-webmaker-loginapi',
+            'openbadges-bakery',
+            'badge-the-world',
+            'openbadges-badges',
+            'node-webmaker-postalservice',
+            'butter',
+            'openbadges-badgestudio',
+            'appmaker-components',
+            'badges.mozilla.org',
+            'openbadges-discussion',
+            'teach-appmaker',
+            'openbadges-cem',
+            'webliteracystandard',
+            'webmaker-ui',
+            'openbadger-client',
+            'friendlycode',
+            'badgeopolis',
+            'openbadges-backpack',
+            'webmaker-events',
+            'openbadges-bakery-service',
+            'popcornjs.org',
+            'make.mozilla.org',
+            'community.openbadges.org',
+            'events.webmaker.org',
+            'openbadges.org',
+            'webmaker-firehose',
+            'popcorn_maker'
+        ]
+
+_org_members = []
 
 def main():
     # Connect to MongoDB
@@ -28,18 +87,29 @@ def main():
     # For now, drop and rebuild the entire collection everytime
     dbh.activities.remove(None, safe=True)
 
-    # Test repository
-    repo_name = 'webmaker.org'
-    store_repo_actions(dbh, repo_name)
+    # Work out who is likely to be staff
+    update_org_members(dbh)
+
+    # Walk through the repos and fetch the activity
+    for repo_name in REPOS:
+        store_repo_actions(dbh, repo_name)
 
 
 def store_repo_actions(dbh, repo_name):
     store_commits(dbh, repo_name)
+    store_issues(dbh, repo_name)
+    store_pulls(dbh, repo_name)
+
 
 def call_api(api_url):
     if api_url:
         print 'Accessing: %s' % (api_url)
-        response = urllib2.urlopen(api_url)
+        response = None
+        try:
+            response = urllib2.urlopen(api_url)
+        except:
+            print "ERROR Accessing: ", api_url
+            return {}, None
 
         # Pagination on the GitHub API requires getting a 'link' value returned in the header
         # and parsing this to extract the 'next' URL
@@ -65,16 +135,16 @@ def call_api(api_url):
     else:
         return {}, None
 
+
 def store_commits(dbh, repo_name):
 
     more_to_fetch = True
     # initial url (will be overwritten when traversing the 'next page' links)
-    api_url = 'https://api.github.com/repos/%s/%s/commits?access_token=%s&per_page=100' % (GITHUB_ORGANISATION, repo_name, GITHUB_ACCESS_TOKEN)
+    api_url = 'https://api.github.com/repos/%s/%s/commits?access_token=%s&per_page=100' % (GITHUB_ORGANISATION, repo_name, keys.GITHUB_ACCESS_TOKEN)
 
     while more_to_fetch:
 
         data, next_url = call_api(api_url)
-
         # traverse
         api_url = next_url
 
@@ -138,12 +208,109 @@ def store_commits(dbh, repo_name):
                 )
 
 
+def store_issues(dbh, repo_name):
+    # initial url (will be overwritten when traversing the 'next page' links)
+    api_url = 'https://api.github.com/repos/%s/%s/issues?access_token=%s&per_page=100' % (GITHUB_ORGANISATION, repo_name, keys.GITHUB_ACCESS_TOKEN)
+
+    more_to_fetch = True
+    while more_to_fetch:
+
+        data, next_url = call_api(api_url)
+        # traverse
+        api_url = next_url
+
+        if len(data) == 0:
+            more_to_fetch = False
+
+        # print json.dumps(data, sort_keys=True, indent=3, separators=(',', ': '))
+        for event in data:
+
+            issue_date = None
+            email = 'NOT-AVAILABLE'
+            login = None
+
+            # This validation is a bit clunky, but it does the job for now
+            if event['created_at']:
+                issue_date = event['created_at']
+
+            if event['user']:
+                if event['user']['login']:
+                    login = event['user']['login']
+
+            store_single_activity(dbh, issue_date, repo_name, 'github-issue', login, email)
+
+
+
+def store_pulls(dbh, repo_name):
+    # initial url (will be overwritten when traversing the 'next page' links)
+    api_url = 'https://api.github.com/repos/%s/%s/pulls?access_token=%s&per_page=100' % (GITHUB_ORGANISATION, repo_name, keys.GITHUB_ACCESS_TOKEN)
+
+    more_to_fetch = True
+    while more_to_fetch:
+
+        data, next_url = call_api(api_url)
+        # traverse
+        api_url = next_url
+
+        if len(data) == 0:
+            more_to_fetch = False
+
+
+        # print json.dumps(data, sort_keys=True, indent=3, separators=(',', ': '))
+        for event in data:
+
+            issue_date = None
+            email = 'NOT-AVAILABLE'
+            login = None
+
+            # This validation is a bit clunky, but it does the job for now
+            if event['created_at']:
+                issue_date = event['created_at']
+
+            if event['user']:
+                if event['user']['login']:
+                    login = event['user']['login']
+
+            store_single_activity(dbh, issue_date, repo_name, 'github-pull-request', login, email)
+
+
+def update_org_members(dbh):
+    '''Gets the list of 'members' for the github organisation, as these are likely to be staff'''
+
+    api_url = 'https://api.github.com/orgs/%s/members?access_token=%s&per_page=100' % (GITHUB_ORGANISATION, keys.GITHUB_ACCESS_TOKEN)
+
+    more_to_fetch = True
+    while more_to_fetch:
+
+        data, next_url = call_api(api_url)
+        # traverse
+        api_url = next_url
+
+        if len(data) == 0:
+            more_to_fetch = False
+
+        for member in data:
+
+            login = None
+            # This validation is a bit clunky, but it does the job for now
+            if member['login']:
+                login = member['login']
+
+            _org_members.append(login)
+
+
+
 def cast_github_datetime(github_datetime):
     return dateutil.parser.parse(github_datetime)
 
 
 def store_single_activity(dbh, github_datetime, repository, action_type, github_login, email):
-    activity = { 'happened_on': cast_github_datetime(github_datetime), 'repository': repository, 'action_type': action_type, 'github_login': github_login, 'email': email }
+
+    is_staff = False
+    if github_login in _org_members:
+        is_staff = True
+
+    activity = { 'happened_on': cast_github_datetime(github_datetime), 'organisation': GITHUB_ORGANISATION, 'repository': repository, 'action_type': action_type, 'github_login': str(github_login), 'email': email, 'staff': is_staff }
     # print activity
     dbh.activities.insert(activity, safe=True)
 
